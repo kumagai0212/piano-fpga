@@ -4,7 +4,7 @@
 /***** Released under the MIT license https://opensource.org/licenses/mit                    *****/
 /*********************************************************************************************/
 `default_nettype none
-
+`define LCD_ROTATE 0  // 0:標準, 1:90度, 2:180度, 3:270度
 `ifdef SYNTHESIS  
 `define WAIT_CNT 100
 `else
@@ -325,7 +325,7 @@ module m_main(
     always @(posedge w_clk) r_raddr <= w_raddr;
     
     m_st7789_disp disp0 (w_clk, st7789_SDA, st7789_SCL, st7789_DC, st7789_RES,
-                         w_raddr, w_rdata, w_mode);
+                         w_raddr, w_rdata);
 endmodule
 
 module m_vmem (
@@ -352,147 +352,153 @@ module m_vmem (
     end
 endmodule
 /*********************************************************************************************/
-module m_st7789_disp(
-    input  wire w_clk, // main clock signal (100MHz)
-    inout  wire st7789_SDA,
-    output wire st7789_SCL,
-    output wire st7789_DC,
-    output wire st7789_RES,
+module m_st7789_disp (
+    input  wire        w_clk,  // main clock signal (100MHz)
+    output wire        st7789_SDA,
+    output wire        st7789_SCL,
+    output wire        st7789_DC,
+    output wire        st7789_RES,
     output wire [15:0] w_raddr,
-    input  wire [15:0] w_rdata,
-    input  wire [3:0]  w_mode
+    input  wire [15:0] w_rdata
 );
-    reg [31:0] r_cnt=1;
-    always @(posedge w_clk) r_cnt <= (r_cnt==0) ? 0 : r_cnt + 1;
+    reg [31:0] r_cnt = 1;
+    always @(posedge w_clk) r_cnt <= (r_cnt == 0) ? 0 : r_cnt + 1;
     reg r_RES = 1;
     always @(posedge w_clk) begin
-        if      (r_cnt==10_000) r_RES <= 0;
-        else if (r_cnt==20_000) r_RES <= 1;
+        r_RES <= (r_cnt == 100000) ? 0 : (r_cnt == 200000) ? 1 : r_RES;
     end
-    assign st7789_RES = r_RES;    
-       
-    wire busy; 
-    reg r_en = 0;
-    reg init_done = 0;
-    reg [4:0]  r_state  = 0;   
-    reg [19:0] r_state2 = 0;   
- 
-    reg [8:0] r_dat = 0;
+    assign st7789_RES = r_RES;
 
-    reg [15:0] r_c = 16'hf800;
-    reg [15:0] r_pagecnt = 0;
-   
-    always @(posedge w_clk) if(!init_done) begin
-        r_en <= (r_cnt>30_000 && !busy && r_cnt[10:0]==0); 
-    end else begin
-        r_en <= (!busy);
-    end
-    
-    always @(posedge w_clk) if(r_en && !init_done) r_state  <= r_state  + 1;
-    
-    always @(posedge w_clk) if(r_en &&  init_done) begin
-        r_state2 <= (r_state2==115210) ? 0 : r_state2 + 1; // 11 + 240x240*2 = 11 + 115200 = 115211
-        if(r_state2==115210) r_pagecnt <= r_pagecnt + 1;
-    end
+    wire       busy;
+    reg        r_en      = 0;
+    reg        init_done = 0;
+    reg  [4:0] r_state   = 0;
+    reg [19:0] r_state2  = 0;
+    reg  [8:0] r_dat     = 0;
+    reg [15:0] r_c       = 16'hf800;
+
+    reg [31:0] r_bcnt = 0;
+    always @(posedge w_clk) r_bcnt <= (busy) ? 0 : r_bcnt + 1;
+
+    always @(posedge w_clk)
+        if (!init_done) begin
+            r_en <= (r_cnt > 1000000 && !busy && r_bcnt > 1000000);
+        end else begin
+            r_en <= (!busy);
+        end
+
+    always @(posedge w_clk) if (r_en && !init_done) r_state <= r_state + 1;
+
+    always @(posedge w_clk)
+        if (r_en && init_done) begin
+            r_state2 <= (r_state2==115210) ? 0 : r_state2 + 1; // 11 + 240x240*2 = 11 + 115200 = 115211
+        end
 
     reg [7:0] r_x = 0;
     reg [7:0] r_y = 0;
-    always @(posedge w_clk) if(r_en &&  init_done && r_state2[0]==1) begin
-       r_x <= (r_state2<=10 || r_x==239) ? 0 : r_x + 1;
-       r_y <= (r_state2<=10) ? 0 : (r_x==239) ? r_y + 1 : r_y;
-    end
-    
-    assign w_raddr = {r_y, r_x};  // default
- 
-    
-    reg  [15:0] r_color = 0;
-    always @(posedge w_clk) r_color <= w_rdata;  
-    
+    always @(posedge w_clk)
+        if (r_en && init_done && r_state2[0] == 1) begin
+            r_x <= (r_state2 < 11 || r_x == 239) ? 0 : r_x + 1;
+            r_y <= (r_state2 < 11) ? 0 : (r_x == 239) ? r_y + 1 : r_y;
+        end
+
+    wire [7:0] w_nx = 239 - r_x;
+    wire [7:0] w_ny = 239 - r_y;
+    assign w_raddr = (`LCD_ROTATE == 0) ? {r_y, r_x} :  // default
+        (`LCD_ROTATE == 1) ? {r_x, w_ny} :  // 90 degree rotation
+        (`LCD_ROTATE == 2) ? {w_ny, w_nx} : {w_nx, r_y};  //180 degree, 240 degree rotation
+
+    reg [15:0] r_color = 0;
+    always @(posedge w_clk) r_color <= w_rdata;
+
     always @(posedge w_clk) begin
-        case (r_state2) /////
-            0:  r_dat<={1'b0, 8'h2A};     //
-            1:  r_dat<={1'b1, 8'h00};     //
-            2:  r_dat<={1'b1, 8'h00};     //
-            3:  r_dat<={1'b1, 8'h00};     //
-            4:  r_dat<={1'b1, 8'd239};    //
-            5:  r_dat<={1'b0, 8'h2B};     //
-            6:  r_dat<={1'b1, 8'h00};     //
-            7:  r_dat<={1'b1, 8'h00};     //
-            8:  r_dat<={1'b1, 8'h00};     //
-            9:  r_dat<={1'b1, 8'd239};    //
-            10: r_dat<={1'b0, 8'h2C};     //  
-            default: r_dat <= (r_state2[0]) ? {1'b1, r_color[15:8]} :{ 1'b1, r_color[7:0]}; 
+        case (r_state2)  /////
+            0: r_dat <= {1'b0, 8'h2A};  // Column Address Set
+            1: r_dat <= {1'b1, 8'h00};  // [0]
+            2: r_dat <= {1'b1, 8'h00};  // [0]
+            3: r_dat <= {1'b1, 8'h00};  // [0]
+            4: r_dat <= {1'b1, 8'd239};  // [239]
+            5: r_dat <= {1'b0, 8'h2B};  // Row Address Set
+            6: r_dat <= {1'b1, 8'h00};  // [0]
+            7: r_dat <= {1'b1, 8'h00};  // [0]
+            8: r_dat <= {1'b1, 8'h00};  // [0]
+            9: r_dat <= {1'b1, 8'd239};  // [239]
+            10: r_dat <= {1'b0, 8'h2C};  // Memory Write
+            default: r_dat <= (r_state2[0]) ? {1'b1, r_color[15:8]} : {1'b1, r_color[7:0]};
         endcase
     end
-    
+
     reg [8:0] r_init = 0;
     always @(posedge w_clk) begin
-        case (r_state) /////
-            0:  r_init<={1'b0, 8'h01};  //
-            1:  r_init<={1'b0, 8'h11};  //
-            2:  r_init<={1'b0, 8'h3A};  //
-            3:  r_init<={1'b1, 8'h55};  //
-            4:  r_init<={1'b0, 8'h36};  //
-            5:  r_init<={1'b1, 8'h00};  //
-            6:  r_init<={1'b0, 8'h2A};  //
-            7:  r_init<={1'b1, 8'h00};  //
-            8:  r_init<={1'b1, 8'h00};  //
-            9:  r_init<={1'b1, 8'h00};  //
-            10: r_init<={1'b1, 8'd240}; //
-            11: r_init<={1'b0, 8'h2B};  //
-            12: r_init<={1'b1, 8'h00};  //
-            13: r_init<={1'b1, 8'h00};  //
-            14: r_init<={1'b1, 8'h00};  //
-            15: r_init<={1'b1, 8'd240}; //
-            16: r_init<={1'b0, 8'h21};  //
-            17: r_init<={1'b0, 8'h13};  //
-            18: r_init<={1'b0, 8'h29};  //
-            19: init_done <= 1;
+        case (r_state)  /////
+            0: r_init <= {1'b0, 8'h01};  // Software Reset, wait 120msec
+            1: r_init <= {1'b0, 8'h11};  // Sleep Out, wait 120msec
+            2: r_init <= {1'b0, 8'h3A};  // Interface Pixel Format
+            3: r_init <= {1'b1, 8'h55};  // [65K RGB, 16bit/pixel]
+            4: r_init <= {1'b0, 8'h36};  // Memory Data Accell Control
+            5: r_init <= {1'b1, 8'h00};  // [000000]
+            6: r_init <= {1'b0, 8'h21};  // Display Inversion On
+            7: r_init <= {1'b0, 8'h13};  // Normal Display Mode On
+            8: r_init <= {1'b0, 8'h29};  // Display On
+            9: init_done <= 1;
         endcase
     end
 
     wire [8:0] w_data = (init_done) ? r_dat : r_init;
-    m_spi spi0 (w_clk, r_en, w_data, st7789_SDA, st7789_SCL, st7789_DC, busy);
+    m_spi spi0 (
+        w_clk,
+        r_en,
+        w_data,
+        st7789_SDA,
+        st7789_SCL,
+        st7789_DC,
+        busy
+    );
 endmodule
 
 /****** SPI send module,  SPI_MODE_2, MSBFIRST                                           *****/
 /*********************************************************************************************/
-module m_spi(
-    input  wire w_clk,       // 100KHz input clock !!
-    input  wire en,          // enable
-    input  wire [8:0] d_in,  //
-    inout  wire SDA,         // 
-    output wire SCL,         // 
-    output wire DC,          // 
-    output wire busy         // busy
+module m_spi (
+    input  wire       w_clk,  // 100MHz input clock !!
+    input  wire       en,     // write enable
+    input  wire [8:0] d_in,   // data in
+    output wire       SDA,    // Serial Data
+    output wire       SCL,    // Serial Clock
+    output wire       DC,     // Data/Control
+    output wire       busy    // busy
 );
-    reg [5:0] r_state=0;  //
-    reg [7:0] r_cnt=0;    //
-    reg r_SCL = 1;        //
-    reg r_SDA = 1;        //
-    reg r_DC  = 0;        // Data/Control
-    reg [7:0] r_data = 0; //
+    reg [5:0] r_state = 0;
+    reg [7:0] r_cnt   = 0;
+    reg       r_SCL   = 1;
+    reg       r_DC    = 0;
+    reg [7:0] r_data  = 0;
+    reg       r_SDA   = 0;
 
     always @(posedge w_clk) begin
-        if(en && r_state==0) begin
+        if (en && r_state == 0) begin
             r_state <= 1;
             r_data  <= d_in[7:0];
             r_DC    <= d_in[8];
-            r_SDA   <= 0;
             r_cnt   <= 0;
-        end
-        else begin
-            r_cnt <= (r_state==0) ? 0 : r_cnt + 1;
-            if(r_state!=0 && r_cnt==18) r_state <= 0;
-            if(r_cnt>0 && r_cnt[0]==0) r_data <= {r_data[6:0], 1'b0};
+        end else if (r_state == 1) begin
+            r_SDA   <= r_data[7];
+            r_data  <= {r_data[6:0], 1'b0};
+            r_state <= 2;
+            r_cnt   <= r_cnt + 1;
+        end else if (r_state == 2) begin
+            r_SCL   <= 0;
+            r_state <= 3;
+        end else if (r_state == 3) begin
+            r_state <= 4;
+        end else if (r_state == 4) begin
+            r_SCL   <= 1;
+            r_state <= (r_cnt == 8) ? 0 : 1;
         end
     end
 
-    always @(posedge w_clk) if(r_state!=0 && (r_cnt>=1) && (r_cnt<=16)) r_SCL <= ~r_SCL;
-
-    assign SDA = r_data[7];
-    assign SCL = r_SCL;
-    assign DC  = r_DC;
-    assign busy = (r_state!=0 || en);
+    assign SDA  = r_SDA;
+    assign SCL  = r_SCL;
+    assign DC   = r_DC;
+    assign busy = (r_state != 0 || en);
 endmodule
 /*********************************************************************************************/

@@ -3,7 +3,7 @@
 FPGA上で動作するピアノタイル風の音楽ゲームです。上から落ちてくるノーツに合わせてタイミングよくボタンを押してください。
 
 ## Demo
-<img src="placeholder_image_url" alt="Gameplay Screen" width="300">
+<img src="fpga_piano.jpg" alt="Gameplay Screen" width="300">
 
 ## Contents
 * **func_2.v** : ゲームのメインロジック (Verilog HDL)
